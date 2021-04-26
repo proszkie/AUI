@@ -4,3 +4,5 @@ services:
         build: .
         ports: 
             - "1935:1935"
+        volumes:
+            - '/tmp:/tmp'
