@@ -1,50 +1,175 @@
+ARG NGINX_VERSION=1.18.0
+ARG NGINX_RTMP_VERSION=1.2.1
 ARG FFMPEG_VERSION=4.4
 
-FROM willprice/nvidia-ffmpeg
 
 ##############################
 # Build the NGINX-build image.
-# FROM alpine:3.13 as build-nginx
-ENV NGINX_VERSION nginx-1.18.0
-ENV NGINX_RTMP_MODULE_VERSION 1.2.1
+FROM ubuntu:18.04 as build-nginx
+ARG NGINX_VERSION
+ARG NGINX_RTMP_VERSION
 
-RUN apt-get update && \
-    apt-get install -y ca-certificates openssl libssl-dev wget gcc g++ build-essential make libpcre3-dev && \
-    rm -rf /var/lib/apt/lists/*
+# Build dependencies.
+RUN apt update && apt install -y \
+  build-essential \
+  cmake \
+  ca-certificates \
+  curl \
+  gcc \
+  libc-dev \
+  make \
+  musl-dev \
+  openssl \
+  libssl-dev \
+  libpcre3 \
+  libpcre3-dev \
+  pkg-config \
+  zlib1g-dev \
+  wget
 
-# Download and decompress Nginx
-RUN mkdir -p /tmp/build/nginx && \
-    cd /tmp/build/nginx && \
-    wget -O ${NGINX_VERSION}.tar.gz https://nginx.org/download/${NGINX_VERSION}.tar.gz && \
-    tar -zxf ${NGINX_VERSION}.tar.gz
+# Get nginx source.
+RUN cd /tmp && \
+  wget https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz && \
+  tar zxf nginx-${NGINX_VERSION}.tar.gz && \
+  rm nginx-${NGINX_VERSION}.tar.gz
 
-# Download and decompress RTMP module
-RUN mkdir -p /tmp/build/nginx-rtmp-module && \
-    cd /tmp/build/nginx-rtmp-module && \
-    wget -O nginx-rtmp-module-${NGINX_RTMP_MODULE_VERSION}.tar.gz https://github.com/arut/nginx-rtmp-module/archive/v${NGINX_RTMP_MODULE_VERSION}.tar.gz && \
-    tar -zxf nginx-rtmp-module-${NGINX_RTMP_MODULE_VERSION}.tar.gz && \
-    cd nginx-rtmp-module-${NGINX_RTMP_MODULE_VERSION}
+# Get nginx-rtmp module.
+RUN cd /tmp && \
+  wget https://github.com/arut/nginx-rtmp-module/archive/v${NGINX_RTMP_VERSION}.tar.gz && \
+  tar zxf v${NGINX_RTMP_VERSION}.tar.gz && rm v${NGINX_RTMP_VERSION}.tar.gz
 
-# Build and install Nginx
-# The default puts everything under /usr/local/nginx, so it's needed to change
-# it explicitly. Not just for order but to have it in the PATH
-RUN cd /tmp/build/nginx/${NGINX_VERSION} && \
-    ./configure \
-        --sbin-path=/usr/local/sbin/nginx \
-        --conf-path=/etc/nginx/nginx.conf \
-        --error-log-path=/var/log/nginx/error.log \
-        --pid-path=/var/run/nginx/nginx.pid \
-        --lock-path=/var/lock/nginx/nginx.lock \
-        --http-log-path=/var/log/nginx/access.log \
-        --http-client-body-temp-path=/tmp/nginx-client-body \
-        --with-http_ssl_module \
-        --with-threads \
-        --with-ipv6 \
-        --add-module=/tmp/build/nginx-rtmp-module/nginx-rtmp-module-${NGINX_RTMP_MODULE_VERSION} && \
-    make -j $(getconf _NPROCESSORS_ONLN) && \
-    make install && \
-    mkdir /var/lock/nginx && \
-    rm -rf /tmp/build
+# Compile nginx with nginx-rtmp module.
+RUN cd /tmp/nginx-${NGINX_VERSION} && \
+  ./configure \
+  --prefix=/usr/local/nginx \
+  --add-module=/tmp/nginx-rtmp-module-${NGINX_RTMP_VERSION} \
+  --conf-path=/etc/nginx/nginx.conf \
+  --with-threads \
+  --with-file-aio \
+  --with-http_ssl_module \
+  --with-debug \
+  --with-cc-opt="-Wimplicit-fallthrough=0" && \
+  cd /tmp/nginx-${NGINX_VERSION} && make && make install
 
-COPY ./nginx.conf /etc/nginx/nginx.conf
-ENTRYPOINT ["nginx", "-g", "daemon off;"]
+###############################
+# Build the FFmpeg-build image.
+FROM nvidia/cuda:11.2.0-devel-ubuntu20.04 as build-ffmpeg
+
+ENV DEBIAN_FRONTEND=noninteractive
+ARG FFMPEG_VERSION
+ARG PREFIX=/usr/local
+ARG MAKEFLAGS="-j4"
+
+# FFmpeg build dependencies.
+RUN apt update && apt install -y \
+  build-essential \
+  coreutils \
+  cmake \
+  libx264-dev \
+  libx265-dev \
+  libc6 \
+  libc6-dev \
+  libfreetype6-dev \
+  libfdk-aac-dev \
+  libmp3lame-dev \
+  libogg-dev \
+  libass9 \
+  libass-dev \
+  libnuma1 \
+  libnuma-dev \
+  libopus-dev \
+  librtmp-dev \
+  libvpx-dev \
+  libvorbis-dev \
+  libwebp-dev \
+  libtheora-dev \
+  libtool \
+  libssl-dev \
+  pkg-config \
+  wget \
+  yasm \
+  git
+
+# Clone and install ffnvcodec
+RUN cd /tmp && git clone https://git.videolan.org/git/ffmpeg/nv-codec-headers.git && \
+  cd nv-codec-headers && make install
+
+# Get FFmpeg source.
+RUN cd /tmp/ && \
+  wget http://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.gz && \
+  tar zxf ffmpeg-${FFMPEG_VERSION}.tar.gz && rm ffmpeg-${FFMPEG_VERSION}.tar.gz
+
+# Compile ffmpeg.
+RUN cd /tmp/ffmpeg-${FFMPEG_VERSION} && \
+  ./configure \
+  --prefix=${PREFIX} \
+  --enable-version3 \
+  --enable-gpl \
+  --enable-nonfree \
+  --enable-small \
+  --enable-libfdk-aac \
+  --enable-openssl \
+  --enable-libnpp \
+  --enable-cuda \
+  --enable-cuvid \
+  --enable-nvenc \
+  --enable-libnpp \
+  --disable-debug \
+  --disable-doc \
+  --disable-ffplay \
+  --extra-cflags=-I/usr/local/cuda/include \
+  --extra-ldflags=-L/usr/local/cuda/lib64 \
+  --extra-libs="-lpthread -lm" && \
+  make && make install && make distclean
+
+# Cleanup.
+RUN rm -rf /var/cache/* /tmp/*
+
+##########################
+# Build the release image.
+FROM nvidia/cuda:11.2.0-runtime-ubuntu20.04
+LABEL MAINTAINER Alfred Gutierrez <alf.g.jr@gmail.com>
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV NVIDIA_DRIVER_VERSION=460
+ENV NVIDIA_VISIBLE_DEVICES all
+ENV NVIDIA_DRIVER_CAPABILITIES compute,video,utility
+
+# Set default ports.
+ENV HTTP_PORT 80
+ENV HTTPS_PORT 443
+ENV RTMP_PORT 1935
+
+# Set default options.
+ENV SINGLE_STREAM ""
+ENV MAX_MUXING_QUEUE_SIZE ""
+ENV ANALYZEDURATION ""
+
+RUN apt update && apt install -y --no-install-recommends \
+  ca-certificates \
+  curl \
+  gettext \
+  libpcre3-dev \
+  libnvidia-decode-${NVIDIA_DRIVER_VERSION} \
+  libnvidia-encode-${NVIDIA_DRIVER_VERSION} \
+  libtheora0 \
+  openssl \
+  rtmpdump
+
+COPY --from=build-nginx /usr/local/nginx /usr/local/nginx
+COPY --from=build-nginx /etc/nginx /etc/nginx
+COPY --from=build-ffmpeg /usr/local /usr/local
+COPY --from=build-ffmpeg /usr/lib/x86_64-linux-gnu/libfdk-aac.so.1 /usr/lib/x86_64-linux-gnu/libfdk-aac.so.1
+
+# Add NGINX path, config and static files.
+ENV PATH "${PATH}:/usr/local/nginx/sbin"
+RUN mkdir -p /opt/data && mkdir /www
+ADD nginx-cuda.conf /etc/nginx/nginx.conf.template
+ADD entrypoint.cuda.sh /opt/entrypoint.sh
+RUN chmod gu+x /opt/entrypoint.sh
+ADD static /www/static
+
+EXPOSE 1935
+EXPOSE 80
+
+CMD /opt/entrypoint.sh
