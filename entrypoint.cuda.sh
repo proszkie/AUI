@@ -20,11 +20,11 @@ else
   qualities=(quality4)
 fi
 
-output_execpush="/usr/local/bin/ffmpeg -vsync -1 -hwaccel cuda -hwaccel_output_format cuda -c:v h264_cuvid -i rtmp://localhost:1935/stream/aui-test "
+output_execpush="/usr/local/bin/ffmpeg -vsync -1 -hwaccel cuda -hwaccel_output_format cuda -c:v h264_cuvid -i rtmp://localhost:1935/stream/$name "
 output_hlsvariants=""
 for quality in "${qualities[@]}"; do
   declare -n qualitylist=$quality
-  output_execpush="$output_execpush"$'\n\t\t'"-c:v h264_nvenc -c:a aac -b:v ${qualitylist[1]} -b:a ${qualitylist[2]} -zerolatency 1 -f flv rtmp://localhost:1935/hls/aui-test_${qualitylist[3]}"
+  output_execpush="$output_execpush"$'\n\t\t'"-c:v h264_nvenc -c:a aac -b:v ${qualitylist[1]} -b:a ${qualitylist[2]} -zerolatency 1 -f flv rtmp://localhost:1935/hls/$name_${qualitylist[3]}"
   output_hlsvariants=$'\n\t\t'"hls_variant _${qualitylist[3]} BANDWIDTH=${qualitylist[4]};"$'\n'"${output_hlsvariants}"
 done
 

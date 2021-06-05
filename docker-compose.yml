@@ -1,8 +1,0 @@
-version: "3.9"
-services:
-    videortmp:
-        build: .
-        ports: 
-            - "1935:1935"
-        volumes:
-            - '/tmp:/tmp'
